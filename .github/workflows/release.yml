@@ -81,6 +81,12 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Reset PHP ABI-sensitive Cargo artifacts
+        run: |
+          cargo clean -p ext-php-rs-bindgen
+          cargo clean -p ext-php-rs
+          cargo clean -p pdfwm_php_ext
+
       - name: Check formatting
         run: cargo fmt --check
 
