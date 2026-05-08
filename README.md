@@ -31,14 +31,20 @@ php -d extension=/absolute/path/to/target/debug/libpdfwm.dylib -r 'var_dump(func
 ```sh
 brew tap dickwu/tap
 brew install dickwu/tap/document-embed
-php -m | grep pdfwm
+$(brew --prefix php)/bin/php -m | grep pdfwm
 ```
 
-The Homebrew formula installs the extension for Homebrew `php@8.3` and writes:
+The Homebrew formula builds the extension against Homebrew `php` using that
+formula's `php-config`, then writes an ini file for the detected PHP
+major/minor version. For example, with Homebrew PHP 8.5 it writes:
 
 ```text
-$(brew --prefix)/etc/php/8.3/conf.d/ext-pdfwm.ini
+$(brew --prefix)/etc/php/8.5/conf.d/ext-pdfwm.ini
 ```
+
+If your shell still resolves `php` to a versioned formula such as `php@8.3`,
+use `$(brew --prefix php)/bin/php` or update your `PATH` so the Homebrew `php`
+formula is first.
 
 ## Runtime Configuration
 
