@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PHP_VERSION: "8.3"
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Install native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq clang libclang-dev pkg-config
+            libclang_file="$(find /usr/lib -name 'libclang.so*' -print -quit)"
+            if [[ -z "$libclang_file" ]]; then
+              libclang_file="$(find /usr/lib -name 'libclang-*.so*' -print -quit)"
+            fi
+            if [[ -z "$libclang_file" ]]; then
+              echo "Unable to locate libclang shared library"
+              exit 1
+            fi
+            libclang_path="$(dirname "$libclang_file")"
+          else
+            brew install llvm
+            libclang_path="$(brew --prefix llvm)/lib"
+          fi
+          echo "LIBCLANG_PATH=${libclang_path}" >> "$GITHUB_ENV"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          coverage: none
+
+      - name: Configure PHP environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PHP=$(command -v php)" >> "$GITHUB_ENV"
+          echo "PHP_CONFIG=$(command -v php-config)" >> "$GITHUB_ENV"
+          php -v
+          php-config --version
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Build extension
+        run: cargo build --locked --release
+
+      - name: Run PHP smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            ext="target/release/libpdfwm.dylib"
+          else
+            ext="target/release/libpdfwm.so"
+          fi
+          php -n -d extension="$ext" tests/smoke.php
