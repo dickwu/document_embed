@@ -44,7 +44,7 @@ class DocumentEmbed < Formula
     (lib/"php/extensions").install "target/release/libpdfwm.#{extension}" => "pdfwm.so"
 
     Pathname.glob(etc/"php/*/conf.d/ext-pdfwm.ini").each do |config|
-      rm_f config unless config == php_conf_d/"ext-pdfwm.ini"
+      rm_f config
     end
 
     php_conf_d.mkpath
