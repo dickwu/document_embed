@@ -100,9 +100,15 @@ impl PdfwmOptions {
             id_codec,
             model_dir,
             pdfium_lib_path,
+            // High-definition default. Each page is rasterized at this DPI and
+            // the TrustMark residual is added on top of the full-resolution
+            // raster, so the page is only ever as sharp as this value. 180 DPI
+            // looked soft/blurry on screen; 500 DPI keeps text crisp. A 500 DPI
+            // US-Letter page is ~23 MP — comfortably under max_pixels_per_page.
+            // Override with options['dpi'] or PDFWM_DPI for larger/faster runs.
             dpi: option_u16(options, "dpi")?
                 .or_else(|| env_u16("PDFWM_DPI"))
-                .unwrap_or(180),
+                .unwrap_or(500),
             strength: option_f32(options, "strength")?
                 .or_else(|| env_f32("PDFWM_STRENGTH"))
                 .unwrap_or(0.95),
@@ -114,9 +120,13 @@ impl PdfwmOptions {
             max_pages: option_usize(options, "max_pages")?
                 .or_else(|| env_usize("PDFWM_MAX_PAGES"))
                 .unwrap_or(100),
+            // Raised alongside the 500 DPI default so legitimate large pages
+            // (e.g. A3 at 500 DPI ~= 48 MP, or Letter pushed past 500 DPI) are
+            // not rejected with a Limit error. Still a guard against pathological
+            // page dimensions blowing up memory during rasterization.
             max_pixels_per_page: option_u64(options, "max_pixels_per_page")?
                 .or_else(|| env_u64("PDFWM_MAX_PIXELS_PER_PAGE"))
-                .unwrap_or(50_000_000),
+                .unwrap_or(100_000_000),
             max_id_bytes: option_usize(options, "max_id_bytes")?
                 .or_else(|| env_usize("PDFWM_MAX_ID_BYTES"))
                 .unwrap_or(256),

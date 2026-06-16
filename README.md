@@ -102,6 +102,12 @@ text, links, forms, bookmarks, attachments, layers, or vector structure. File
 size can increase substantially. Higher DPI improves raster quality but makes
 generation slower and larger.
 
+Pages are embedded at the **full rasterized resolution** (no silent
+downsampling) and stored as high-quality JPEG (`jpeg_quality`, default 92). The
+default `dpi` is **500**, which keeps form text crisp; lower it (e.g. `dpi`/
+`PDFWM_DPI`) to trade sharpness for smaller, faster output. A 500 DPI US-Letter
+page is roughly 23 MP and ~1–2 MB per page after JPEG compression.
+
 TrustMark is not DRM, encryption, or malicious-removal-proof steganography. It
 improves leak tracing through screenshots and common image transforms, but it
 cannot stop a user from taking screenshots, photographing a screen, or attacking

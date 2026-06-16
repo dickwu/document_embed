@@ -2,7 +2,10 @@ use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
 
 use image::{DynamicImage, ImageFormat, codecs::jpeg::JpegEncoder};
 use pdfium_render::prelude::*;
-use printpdf::{Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt, RawImage, XObjectTransform};
+use printpdf::{
+    ImageCompression, ImageOptimizationOptions, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt,
+    RawImage, XObjectTransform,
+};
 use trustmark::Trustmark;
 
 use crate::{
@@ -87,8 +90,7 @@ pub fn embed_image_path(
 
     let encoded = encode_id(id, options)?;
     let tm = trustmark_engine(options)?;
-    let input = image::open(input_path)
-        .map_err(|err| PdfwmError::Image(format!("failed to decode input image: {err}")))?;
+    let input = decode_image_any_format(input_path)?;
     let output = tm
         .encode(encoded.bits.clone(), input, options.strength)
         .map_err(|err| PdfwmError::Watermark(format!("TrustMark encode failed: {err}")))?;
@@ -112,8 +114,7 @@ pub fn extract_image_path(
     validate_path(image_path, "imagePath")?;
 
     let tm = trustmark_engine(options)?;
-    let input = image::open(image_path)
-        .map_err(|err| PdfwmError::Image(format!("failed to decode input image: {err}")))?;
+    let input = decode_image_any_format(image_path)?;
     let bits = tm
         .decode(input)
         .map_err(|err| PdfwmError::Watermark(format!("TrustMark decode failed: {err}")))?;
@@ -148,6 +149,12 @@ pub fn embed_pdf_path(
         let watermarked = tm
             .encode(encoded.bits.clone(), page.image, options.strength)
             .map_err(|err| PdfwmError::Watermark(format!("TrustMark encode failed: {err}")))?;
+        // Collapse to 8-bit RGB immediately. TrustMark hands back a 32-bit-float
+        // image (~5x the size of RGB8); holding that for every page until the
+        // PDF rebuild is what drove peak memory to several GB on multi-page,
+        // high-DPI exports. The rebuild down-converts to RGB8 anyway, so doing
+        // it here is output-identical but frees the float buffer per page.
+        let watermarked = DynamicImage::ImageRgb8(watermarked.to_rgb8());
         watermarked_pages.push((watermarked, page.width_points, page.height_points));
     }
 
@@ -286,6 +293,25 @@ fn save_image(
     }
 }
 
+/// Decode an image, detecting its format from the file *content* (magic bytes)
+/// rather than the filename extension.
+///
+/// Callers such as the admin "Leak Check" upload path hand us temporary files
+/// whose name carries a random, opaque suffix (e.g. `/tmp/phpXXXXXX.EAu0iQ`).
+/// The bare `image::open` guesses the format from that suffix and aborts with
+/// `The file extension ."EAu0iQ" was not recognized as an image format`, even
+/// for a perfectly valid PNG/JPEG/WebP. `with_guessed_format` instead sniffs the
+/// leading bytes, so any supported raster format decodes regardless of how the
+/// file happens to be named on disk.
+fn decode_image_any_format(path: &str) -> Result<DynamicImage, PdfwmError> {
+    image::ImageReader::open(path)
+        .map_err(|err| PdfwmError::Image(format!("failed to open input image: {err}")))?
+        .with_guessed_format()
+        .map_err(|err| PdfwmError::Image(format!("failed to read input image: {err}")))?
+        .decode()
+        .map_err(|err| PdfwmError::Image(format!("failed to decode input image: {err}")))
+}
+
 fn render_pdf_pages(
     pdf_path: &str,
     options: &PdfwmOptions,
@@ -409,10 +435,31 @@ fn rebuild_image_only_pdf(
         ));
     }
 
+    // CRITICAL for output sharpness. `PdfSaveOptions::default()` enables image
+    // optimization with `max_image_size = "2MB"`, where the budget is measured
+    // against the *uncompressed* pixel buffer. printpdf therefore downsamples
+    // every page to ~2 MB / 3 bytes ≈ 0.7 MP (~735x951, i.e. ~86 effective DPI)
+    // no matter how high we rasterize — that silent cap, not the source DPI, was
+    // the real cause of the blurry exports. Drop the cap so each page keeps its
+    // full rasterized resolution, and compress with a high-quality JPEG so the
+    // file stays a sane size. The TrustMark watermark is JPEG/screenshot-robust,
+    // so lossy compression at this quality does not break extraction.
+    let jpeg_quality = (f32::from(options.jpeg_quality) / 100.0).clamp(0.0, 1.0);
+    let save_options = PdfSaveOptions {
+        image_optimization: Some(ImageOptimizationOptions {
+            quality: Some(jpeg_quality),
+            // None = never downscale. This is the line that fixes the blur.
+            max_image_size: None,
+            dither_greyscale: Some(false),
+            convert_to_greyscale: Some(false),
+            auto_optimize: Some(false),
+            format: Some(ImageCompression::Jpeg),
+        }),
+        ..PdfSaveOptions::default()
+    };
+
     let mut warnings = Vec::new();
-    let bytes = doc
-        .with_pages(pdf_pages)
-        .save(&PdfSaveOptions::default(), &mut warnings);
+    let bytes = doc.with_pages(pdf_pages).save(&save_options, &mut warnings);
     std::fs::write(output_path, bytes)
         .map_err(|err| PdfwmError::Pdf(format!("failed to write output PDF: {err}")))?;
 
