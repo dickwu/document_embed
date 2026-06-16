@@ -195,6 +195,9 @@ fn extract_image_result_to_array(
     output
         .insert("confidence", result.confidence)
         .map_err(array_error)?;
+    output
+        .insert("votes", result.votes as i64)
+        .map_err(array_error)?;
     Ok(output)
 }
 
@@ -207,6 +210,7 @@ fn extract_pdf_result_to_array(
         version: result.version,
         variant: result.variant,
         confidence: 1.0,
+        votes: result.votes,
     })?;
     output
         .insert("page_count", result.page_count as i64)

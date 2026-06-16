@@ -45,6 +45,35 @@ pub struct PdfwmOptions {
     pub max_id_bytes: usize,
     pub allow_control_chars: bool,
     pub min_votes: usize,
+    /// Target side length (px) of each watermark tile. The page is split into a
+    /// grid of ~square tiles and each is watermarked with the same id, so any
+    /// partial screenshot containing one whole tile is still traceable and the
+    /// TrustMark residual is upscaled only ~tile/256x (not ~page/256x), which
+    /// makes the faint background "shadow" far finer. 0 disables tiling.
+    pub tile_size: u32,
+    /// Width (px) of the residual edge-feather inside each tile. 0 = derive from
+    /// the tile size. Feathering the residual to zero at tile borders keeps the
+    /// tiles seamless (no visible grid) and avoids hard watermark discontinuities.
+    pub tile_feather: u32,
+    /// Whether extract should run the sliding-window search (needed to decode
+    /// tiled documents and partial screenshots). Disable for legacy whole-image
+    /// decode only.
+    pub search_decode: bool,
+    /// Minimum number of agreeing window decodes required to trust a watermark
+    /// id from the search (defends against rare BCH false positives). A single
+    /// whole-image decode is still honoured as a backward-compatible fallback.
+    pub min_search_votes: usize,
+    /// Upper bound on how many windows the search scans per image (caps the
+    /// worst-case decode time on very large uploads).
+    pub max_search_windows: usize,
+    /// When set, reject a decoded numeric id with more than this many digits.
+    /// TrustMark's decoder always emits 100 bits and BCH "corrects" even an
+    /// unwatermarked region into a *consistent* bogus id; constraining the
+    /// result to the id space we actually embed (small auto-increment audit
+    /// ids) is what stops a clean page from being read as watermarked. Paired
+    /// with an `id_codec` of `uint_decimal`, a 20-digit or base36 "id" is
+    /// recognised as noise and discarded.
+    pub id_max_digits: Option<usize>,
 }
 
 impl PdfwmOptions {
@@ -132,6 +161,23 @@ impl PdfwmOptions {
                 .unwrap_or(256),
             allow_control_chars: option_bool(options, "allow_control_chars")?.unwrap_or(false),
             min_votes: option_usize(options, "min_votes")?.unwrap_or(1),
+            tile_size: option_u32(options, "tile_size")?
+                .or_else(|| env_u32("PDFWM_TILE_SIZE"))
+                .unwrap_or(1280),
+            tile_feather: option_u32(options, "tile_feather")?
+                .or_else(|| env_u32("PDFWM_TILE_FEATHER"))
+                .unwrap_or(0),
+            search_decode: option_bool(options, "search_decode")?
+                .or_else(|| env_bool("PDFWM_SEARCH_DECODE"))
+                .unwrap_or(true),
+            min_search_votes: option_usize(options, "min_search_votes")?
+                .or_else(|| env_usize("PDFWM_MIN_SEARCH_VOTES"))
+                .unwrap_or(2),
+            max_search_windows: option_usize(options, "max_search_windows")?
+                .or_else(|| env_usize("PDFWM_MAX_SEARCH_WINDOWS"))
+                .unwrap_or(180),
+            id_max_digits: option_usize(options, "id_max_digits")?
+                .or_else(|| env_usize("PDFWM_ID_MAX_DIGITS")),
         })
     }
 
@@ -202,6 +248,16 @@ fn option_u16(options: Option<&ZendHashTable>, key: &str) -> Result<Option<u16>,
         .transpose()
 }
 
+fn option_u32(options: Option<&ZendHashTable>, key: &str) -> Result<Option<u32>, PdfwmError> {
+    option_u64(options, key)?
+        .map(|value| {
+            u32::try_from(value).map_err(|_| {
+                PdfwmError::InvalidArgument(format!("options['{key}'] is out of range for u32"))
+            })
+        })
+        .transpose()
+}
+
 fn option_usize(options: Option<&ZendHashTable>, key: &str) -> Result<Option<usize>, PdfwmError> {
     option_u64(options, key)?
         .map(|value| {
@@ -249,6 +305,18 @@ fn env_u64(key: &str) -> Option<u64> {
 
 fn env_u16(key: &str) -> Option<u16> {
     env::var(key).ok()?.parse().ok()
+}
+
+fn env_u32(key: &str) -> Option<u32> {
+    env::var(key).ok()?.parse().ok()
+}
+
+fn env_bool(key: &str) -> Option<bool> {
+    match env::var(key).ok()?.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn env_f32(key: &str) -> Option<f32> {

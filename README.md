@@ -64,6 +64,17 @@ Supported options include `id_codec`, `model_dir`, `pdfium_lib_path`, `dpi`,
 `strength`, `variant`, `version`, `image_format`, `jpeg_quality`,
 `embed_metadata`, `max_pages`, `max_pixels_per_page`, and `max_id_bytes`.
 
+Tiling and partial-screenshot decoding add:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `tile_size` | `1280` | Target tile side (px) of the watermark grid; `0` disables tiling (single whole-image watermark). |
+| `tile_feather` | auto | Residual edge-feather width (px) inside each tile; `0` derives it from the tile size. |
+| `search_decode` | `true` | Run the sliding-window search on extract (needed to decode tiled output and partial screenshots). |
+| `min_search_votes` | `2` | Agreeing windows required for a high-confidence decode (a single decode is still returned at low confidence). |
+| `max_search_windows` | `180` | Upper bound on windows scanned per image. |
+| `id_max_digits` | unset | Reject decoded numeric ids longer than this — paired with an `id_codec` constraint it discards noise decodes from unwatermarked regions. |
+
 ## API
 
 ```php
@@ -74,9 +85,29 @@ pdfwm_extract_pdf_path(string $pdfPath, array $options = []): array;
 pdfwm_read_metadata(string $pdfPath): array;
 ```
 
-The upstream Rust TrustMark crate currently returns decoded payload bits without
-a detector confidence score. This extension returns `confidence => 1.0` for
-successful decodes; PDF extraction still votes across pages by decoded ID.
+Extraction returns `id`, `confidence` (1.0 when corroborated by
+`min_search_votes` windows, lower for a single decode), and `votes` (how many
+windows agreed). PDF extraction additionally votes across pages.
+
+### Tiled watermark & partial-screenshot tracing
+
+A single whole-image TrustMark is keyed to the entire frame, so a *cropped*
+screenshot of a watermarked page cannot be decoded, and its residual — a 256×256
+pattern stretched across the whole page — shows up as a faint low-frequency
+"shadow" on white backgrounds. To fix both, embedding splits each page into a
+grid of ~square tiles (`tile_size`) and watermarks each tile with the same id:
+
+- A partial screenshot that contains one whole tile is still traceable.
+- Each tile's residual is upscaled only ~`tile/256`×, so the shadow becomes fine
+  and far less visible; `strength` scales it down further.
+- The residual is feathered to zero at tile borders, so the grid is seamless.
+
+Extraction mirrors this: it tries the whole image (legacy single-watermark
+output and full-page shots) and then sweeps multi-scale sliding windows, voting
+across whatever regions decode. Because TrustMark's decoder always emits bits
+and BCH will "correct" even unwatermarked content into a *consistent* bogus id,
+votes alone are not proof of a watermark — constrain results to the id space you
+actually embed (`id_codec` + `id_max_digits`) so a clean page cannot be misread.
 
 ## ID Capacity
 
