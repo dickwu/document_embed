@@ -166,11 +166,12 @@ pub fn embed_pdf_path(
     }
     let mut watermarked_pages = Vec::with_capacity(page_count);
 
+    // Pages are watermarked sequentially, NOT in parallel. A single page's 12
+    // tiles already saturate ORT's shared inference pool + memory bandwidth, so
+    // running pages concurrently (nested rayon) only adds contention — measured
+    // ~15% SLOWER on a multi-page export. The work is inference-throughput-bound,
+    // not core-bound; the tile-level parallelism inside embed_tiled is the win.
     for page in pages {
-        // Tiled embed returns an already-RGB8 page. Each tile's TrustMark output
-        // (a 32-bit-float image ~5x the size of RGB8) is consumed and collapsed
-        // tile-by-tile inside embed_tiled, so peak memory stays bounded on
-        // multi-page, high-DPI exports instead of holding floats for every page.
         let mark = std::time::Instant::now();
         let watermarked = embed_tiled(&tm, &encoded.bits, page.image, options)?;
         if dbg {
