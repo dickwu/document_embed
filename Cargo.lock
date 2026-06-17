@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "pdfwm_php_ext"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "ext-php-rs",

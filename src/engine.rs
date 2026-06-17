@@ -1,12 +1,14 @@
 use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
 
-use image::{DynamicImage, GenericImageView, ImageFormat, RgbImage, codecs::jpeg::JpegEncoder, imageops};
-use rayon::prelude::*;
+use image::{
+    DynamicImage, GenericImageView, ImageFormat, RgbImage, codecs::jpeg::JpegEncoder, imageops,
+};
 use pdfium_render::prelude::*;
 use printpdf::{
     ImageCompression, ImageOptimizationOptions, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt,
     RawImage, XObjectTransform,
 };
+use rayon::prelude::*;
 use trustmark::Trustmark;
 
 use crate::{
@@ -148,7 +150,10 @@ pub fn embed_pdf_path(
     let mark = std::time::Instant::now();
     let tm = trustmark_engine(options)?;
     if dbg {
-        eprintln!("[t] engine build: {:.0}ms", mark.elapsed().as_secs_f64() * 1e3);
+        eprintln!(
+            "[t] engine build: {:.0}ms",
+            mark.elapsed().as_secs_f64() * 1e3
+        );
     }
     let mark = std::time::Instant::now();
     let pages = render_pdf_pages(input_path, options)?;
@@ -169,7 +174,10 @@ pub fn embed_pdf_path(
         let mark = std::time::Instant::now();
         let watermarked = embed_tiled(&tm, &encoded.bits, page.image, options)?;
         if dbg {
-            eprintln!("[t] embed page: {:.0}ms", mark.elapsed().as_secs_f64() * 1e3);
+            eprintln!(
+                "[t] embed page: {:.0}ms",
+                mark.elapsed().as_secs_f64() * 1e3
+            );
         }
         watermarked_pages.push((watermarked, page.width_points, page.height_points));
     }
@@ -540,7 +548,11 @@ fn embed_tiled(
     // A single tile is byte-for-byte the legacy whole-image watermark.
     if cols <= 1 && rows <= 1 {
         let encoded = tm
-            .encode(bits.to_string(), DynamicImage::ImageRgb8(base), options.strength)
+            .encode(
+                bits.to_string(),
+                DynamicImage::ImageRgb8(base),
+                options.strength,
+            )
             .map_err(|err| PdfwmError::Watermark(format!("TrustMark encode failed: {err}")))?;
         return Ok(DynamicImage::ImageRgb8(encoded.to_rgb8()));
     }
