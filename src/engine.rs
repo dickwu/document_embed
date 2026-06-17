@@ -1,4 +1,10 @@
-use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::BufWriter,
+    path::Path,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use image::{
     DynamicImage, GenericImageView, ImageFormat, RgbImage, codecs::jpeg::JpegEncoder, imageops,
@@ -277,14 +283,46 @@ fn encode_id(id: &str, options: &PdfwmOptions) -> Result<EncodedId, PdfwmError> 
     .map_err(Into::into)
 }
 
-fn trustmark_engine(options: &PdfwmOptions) -> Result<Trustmark, PdfwmError> {
+/// Process-global cache of loaded TrustMark engines, keyed by model dir +
+/// variant + version. Building an engine loads two ONNX graphs (~60 MB) and
+/// takes ~1s; in a long-lived worker the first export pays that once and every
+/// later export reuses the cached engine. The ONNX `Session` is `Sync`, so a
+/// single shared engine safely serves concurrent requests.
+fn trustmark_engine(options: &PdfwmOptions) -> Result<Arc<Trustmark>, PdfwmError> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Trustmark>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
     let model_dir = options.require_model_dir()?;
-    Trustmark::new(
-        model_dir,
+    let key = format!(
+        "{}|{}|{}",
+        model_dir.display(),
         options.variant,
-        to_trustmark_version(options.version),
-    )
-    .map_err(|err| PdfwmError::Config(format!("failed to load TrustMark models: {err}")))
+        options.version
+    );
+
+    if let Some(engine) = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+    {
+        return Ok(Arc::clone(engine));
+    }
+
+    // Miss: build outside the lock so a slow first load never blocks other
+    // configs (a rare concurrent double-build just discards one — both valid).
+    let engine = Arc::new(
+        Trustmark::new(
+            model_dir,
+            options.variant,
+            to_trustmark_version(options.version),
+        )
+        .map_err(|err| PdfwmError::Config(format!("failed to load TrustMark models: {err}")))?,
+    );
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, Arc::clone(&engine));
+    Ok(engine)
 }
 
 fn to_trustmark_version(version: TrustmarkVersion) -> trustmark::Version {
