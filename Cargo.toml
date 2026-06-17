@@ -1,6 +1,6 @@
 [package]
 name = "pdfwm_php_ext"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -19,6 +19,7 @@ num-bigint = "0.4"
 num-traits = "0.2"
 pdfium-render = { version = "0.9.1", features = ["image_latest", "thread_safe"] }
 printpdf = { version = "0.9.1", default-features = false, features = ["jpeg", "png"] }
+rayon = "1.10"
 thiserror = "1"
 trustmark = "0.2.2"
 

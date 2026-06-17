@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
 
 use image::{DynamicImage, GenericImageView, ImageFormat, RgbImage, codecs::jpeg::JpegEncoder, imageops};
+use rayon::prelude::*;
 use pdfium_render::prelude::*;
 use printpdf::{
     ImageCompression, ImageOptimizationOptions, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt,
@@ -142,10 +143,22 @@ pub fn embed_pdf_path(
     validate_path(input_path, "inputPdfPath")?;
     validate_path(output_path, "outputPdfPath")?;
 
+    let dbg = std::env::var("PDFWM_DEBUG_TIME").is_ok();
     let encoded = encode_id(id, options)?;
+    let mark = std::time::Instant::now();
     let tm = trustmark_engine(options)?;
+    if dbg {
+        eprintln!("[t] engine build: {:.0}ms", mark.elapsed().as_secs_f64() * 1e3);
+    }
+    let mark = std::time::Instant::now();
     let pages = render_pdf_pages(input_path, options)?;
     let page_count = pages.len();
+    if dbg {
+        eprintln!(
+            "[t] render {page_count} pages: {:.0}ms",
+            mark.elapsed().as_secs_f64() * 1e3
+        );
+    }
     let mut watermarked_pages = Vec::with_capacity(page_count);
 
     for page in pages {
@@ -153,11 +166,19 @@ pub fn embed_pdf_path(
         // (a 32-bit-float image ~5x the size of RGB8) is consumed and collapsed
         // tile-by-tile inside embed_tiled, so peak memory stays bounded on
         // multi-page, high-DPI exports instead of holding floats for every page.
+        let mark = std::time::Instant::now();
         let watermarked = embed_tiled(&tm, &encoded.bits, page.image, options)?;
+        if dbg {
+            eprintln!("[t] embed page: {:.0}ms", mark.elapsed().as_secs_f64() * 1e3);
+        }
         watermarked_pages.push((watermarked, page.width_points, page.height_points));
     }
 
+    let mark = std::time::Instant::now();
     rebuild_image_only_pdf(&watermarked_pages, output_path, options)?;
+    if dbg {
+        eprintln!("[t] save pdf: {:.0}ms", mark.elapsed().as_secs_f64() * 1e3);
+    }
     if options.embed_metadata {
         metadata::write_pdf_metadata(
             output_path,
@@ -526,18 +547,24 @@ fn embed_tiled(
 
     let xs = tile_bounds(width, cols);
     let ys = tile_bounds(height, rows);
-    let mut out = base.clone();
 
+    // Tile rectangles, watermarked in parallel: each tile is an independent
+    // TrustMark encode (~80% of an embed's cost) and the page splits cleanly
+    // across cores. Compositing the finished tiles back is cheap and sequential.
+    let mut jobs = Vec::with_capacity((cols * rows) as usize);
     for ry in 0..rows as usize {
         let (y0, y1) = (ys[ry], ys[ry + 1]);
-        let tile_h = y1 - y0;
         for cx in 0..cols as usize {
             let (x0, x1) = (xs[cx], xs[cx + 1]);
-            let tile_w = x1 - x0;
-            if tile_w == 0 || tile_h == 0 {
-                continue;
+            if x1 > x0 && y1 > y0 {
+                jobs.push((x0, y0, x1 - x0, y1 - y0));
             }
+        }
+    }
 
+    let patches = jobs
+        .par_iter()
+        .map(|&(x0, y0, tile_w, tile_h)| {
             let tile: RgbImage = imageops::crop_imm(&base, x0, y0, tile_w, tile_h).to_image();
             let encoded = tm
                 .encode(
@@ -554,20 +581,31 @@ fn embed_tiled(
                 (tile_w.min(tile_h) / 16).max(8)
             };
 
+            // Feather the residual to zero at the tile borders and bake it onto a
+            // copy of the original tile, so each tile's edges meet the untouched
+            // page seamlessly.
+            let mut patch = tile.clone();
             for ty in 0..tile_h {
                 let weight_y = feather_weight(ty, tile_h, margin);
                 for tx in 0..tile_w {
                     let weight = weight_y * feather_weight(tx, tile_w, margin);
                     let src = tile.get_pixel(tx, ty).0;
                     let enc = encoded.get_pixel(tx, ty).0;
-                    let dst = out.get_pixel_mut(x0 + tx, y0 + ty);
+                    let px = patch.get_pixel_mut(tx, ty);
                     for ch in 0..3 {
                         let delta = (f32::from(enc[ch]) - f32::from(src[ch])) * weight;
-                        dst.0[ch] = (f32::from(src[ch]) + delta).round().clamp(0.0, 255.0) as u8;
+                        px.0[ch] = (f32::from(src[ch]) + delta).round().clamp(0.0, 255.0) as u8;
                     }
                 }
             }
-        }
+            Ok((x0, y0, patch))
+        })
+        .collect::<Result<Vec<_>, PdfwmError>>()?;
+
+    // `base` is no longer borrowed by the parallel encode; reuse it as the canvas.
+    let mut out = base;
+    for (x0, y0, patch) in patches {
+        imageops::replace(&mut out, &patch, i64::from(x0), i64::from(y0));
     }
 
     Ok(DynamicImage::ImageRgb8(out))

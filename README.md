@@ -101,6 +101,10 @@ grid of ~square tiles (`tile_size`) and watermarks each tile with the same id:
 - Each tile's residual is upscaled only ~`tile/256`×, so the shadow becomes fine
   and far less visible; `strength` scales it down further.
 - The residual is feathered to zero at tile borders, so the grid is seamless.
+- Tiles are independent, so they are watermarked in parallel across all cores —
+  embedding a page is dominated by rasterisation, not the neural net. Keep
+  `tile_size` proportional to `dpi` to hold the tile *count* (and the per-page
+  cost) constant as you raise resolution.
 
 Extraction mirrors this: it tries the whole image (legacy single-watermark
 output and full-page shots) and then sweeps multi-scale sliding windows, voting
